@@ -94,6 +94,16 @@ with st.sidebar:
         wall_vertical_spacing = st.number_input("Wall vertical spacing (mm)", min_value=25, max_value=500, value=150, step=5)
         hopper_bar = st.number_input("Hopper bar diameter (mm)", min_value=6, max_value=40, value=16, step=1)
         hopper_spacing = st.number_input("Hopper bar spacing (mm)", min_value=25, max_value=500, value=150, step=5)
+        hopper_ring_bar = st.number_input("Hopper ring bar diameter (mm)", min_value=6, max_value=40, value=12, step=1)
+        hopper_ring_spacing = st.number_input("Hopper ring bar spacing (mm)", min_value=25, max_value=500, value=150, step=5)
+        ring_main_bar = st.number_input("Ring beam main bar diameter (mm)", min_value=6, max_value=40, value=16, step=1)
+        ring_main_count = st.number_input("Ring beam main bar count", min_value=4, max_value=32, value=4, step=1)
+        ring_stirrup_bar = st.number_input("Ring beam stirrup diameter (mm)", min_value=6, max_value=25, value=8, step=1)
+        ring_stirrup_spacing = st.number_input("Ring beam stirrup spacing (mm)", min_value=25, max_value=500, value=150, step=5)
+        column_main_bar = st.number_input("Column main bar diameter (mm)", min_value=6, max_value=40, value=16, step=1)
+        column_main_count = st.number_input("Column main bars per column", min_value=4, max_value=32, value=8, step=1)
+        column_tie_bar = st.number_input("Column tie diameter (mm)", min_value=6, max_value=25, value=8, step=1)
+        column_tie_spacing = st.number_input("Column tie spacing (mm)", min_value=25, max_value=500, value=150, step=5)
         lap_allowance = st.number_input("Lap / anchorage allowance per bar (m)", min_value=0.0, value=0.60, step=0.05)
 
         submitted = st.form_submit_button("Update calculations", type="primary", use_container_width=True)
@@ -206,8 +216,8 @@ metric_cols[1].metric("Stored mass", f"{stored_mass_tonnes:,.1f} t")
 metric_cols[2].metric("Max. horizontal pressure", f"{horizontal_pressure[-1]:,.1f} kN/m²")
 metric_cols[3].metric("Max. hoop tension", f"{hoop_tension[-1]:,.1f} kN/m")
 
-tab_summary, tab_loads, tab_structure, tab_model, tab_bbs = st.tabs([
-    "Overview", "Pressure analysis", "Preliminary wall estimate", "Drawings & 3D", "Quantity schedule"
+tab_summary, tab_loads, tab_structure, tab_model, tab_reinforcement, tab_bbs = st.tabs([
+    "Overview", "Pressure analysis", "Preliminary wall estimate", "Drawings & 3D", "Reinforcement detailing", "Quantity schedule"
 ])
 
 with tab_summary:
@@ -471,6 +481,328 @@ with tab_model:
         st.plotly_chart(fig3d, use_container_width=True)
 
     st.caption("Schematic geometry only, matching the source drawing arrangement. These figures are not construction drawings and do not verify structural adequacy.")
+
+with tab_reinforcement:
+    st.subheader("Reinforcement arrangement — notebook Step 14 style")
+    st.warning(
+        "These are schematic reinforcement placement views based on the entered bar sizes and spacing. "
+        "They do not verify development length, laps, anchorage, cover, congestion, or structural adequacy."
+    )
+    rebar_elevation_tab, rebar_plan_tab, rebar_3d_tab = st.tabs([
+        "2D elevation", "2D plan", "3D reinforcement model"
+    ])
+
+    cover = concrete_cover_mm / 1000
+    wall_vertical_spacing_m = wall_vertical_spacing / 1000
+    wall_hoop_spacing_m = wall_hoop_spacing / 1000
+    hopper_meridional_spacing_m = hopper_spacing / 1000
+    hopper_ring_spacing_m = hopper_ring_spacing / 1000
+    ring_stirrup_spacing_m = ring_stirrup_spacing / 1000
+    column_tie_spacing_m = column_tie_spacing / 1000
+
+    # Follow the notebook's Step 14 bar layout rules and keep Plotly traces grouped
+    # by bar family to avoid creating hundreds of separate browser traces.
+    wall_bar_count = max(8, int(math.ceil(math.pi * diameter / wall_vertical_spacing_m)))
+    wall_angles = np.linspace(0, 2 * math.pi, wall_bar_count, endpoint=False)
+    wall_hoop_levels = np.arange(wall_hoop_spacing_m / 2, cylinder_height, wall_hoop_spacing_m)
+    hopper_meridional_count = max(8, int(math.ceil(math.pi * diameter / hopper_meridional_spacing_m)))
+    hopper_angles = np.linspace(0, 2 * math.pi, hopper_meridional_count, endpoint=False)
+    hopper_ring_levels = np.arange(hopper_ring_spacing_m, hopper_height, hopper_ring_spacing_m)
+    column_radius = radius * 0.75
+    column_angles = np.linspace(0, 2 * math.pi, int(number_of_columns), endpoint=False)
+    column_x = column_radius * np.cos(column_angles)
+    column_y = column_radius * np.sin(column_angles)
+    ring_beam_top_z = 0.0
+    ring_beam_bottom_z = -beam_depth
+    column_top_z = ring_beam_bottom_z
+    column_bottom_z = column_top_z - column_height
+
+    def perimeter_bar_points(width_m, depth_m, count):
+        """Place count points uniformly around a rectangular bar perimeter."""
+        corners = np.array([
+            [-width_m / 2, -depth_m / 2],
+            [width_m / 2, -depth_m / 2],
+            [width_m / 2, depth_m / 2],
+            [-width_m / 2, depth_m / 2],
+            [-width_m / 2, -depth_m / 2],
+        ])
+        lengths = np.linalg.norm(np.diff(corners, axis=0), axis=1)
+        perimeter = float(lengths.sum())
+        points = []
+        for index in range(int(count)):
+            distance = index * perimeter / int(count)
+            for side_index, side_length in enumerate(lengths):
+                if distance <= side_length + 1e-9:
+                    fraction = distance / side_length
+                    points.append(corners[side_index] + fraction * (corners[side_index + 1] - corners[side_index]))
+                    break
+                distance -= side_length
+        return np.asarray(points)
+
+    ring_bar_clearance = cover + ring_stirrup_bar / 1000 + ring_main_bar / 2000
+    beam_bar_width = max(0.01, beam_width - 2 * ring_bar_clearance)
+    beam_bar_depth = max(0.01, beam_depth - 2 * ring_bar_clearance)
+    beam_bar_points = perimeter_bar_points(beam_bar_width, beam_bar_depth, int(ring_main_count))
+    beam_mid_z = (ring_beam_top_z + ring_beam_bottom_z) / 2
+    ring_beam_bar_paths = [
+        {"radius": radius + float(point[0]), "z": beam_mid_z + float(point[1])}
+        for point in beam_bar_points
+    ]
+    ring_stirrup_count = max(1, int(math.ceil(2 * math.pi * radius / ring_stirrup_spacing_m)))
+    ring_stirrup_angles = np.linspace(0, 2 * math.pi, ring_stirrup_count, endpoint=False)
+    stirrup_radial_half = max(0.01, beam_width / 2 - cover - ring_stirrup_bar / 2000)
+    column_bar_clearance = cover + column_tie_bar / 1000 + column_main_bar / 2000
+    column_bar_width = max(0.01, column_width - 2 * column_bar_clearance)
+    column_bar_depth = max(0.01, column_depth - 2 * column_bar_clearance)
+    column_bar_points = perimeter_bar_points(column_bar_width, column_bar_depth, int(column_main_count))
+    column_tie_levels = np.arange(
+        column_bottom_z + column_tie_spacing_m / 2,
+        column_top_z,
+        column_tie_spacing_m,
+    )
+    theta_detail = np.linspace(0, 2 * math.pi, 160)
+
+    def add_2d_segment_family(figure, segments, name, color, width=1.5, dash="solid"):
+        x_values, y_values = [], []
+        for x_segment, y_segment in segments:
+            x_values.extend(x_segment)
+            y_values.extend(y_segment)
+            x_values.append(None)
+            y_values.append(None)
+        if x_values:
+            figure.add_trace(go.Scatter(
+                x=x_values, y=y_values, mode="lines", name=name,
+                line={"color": color, "width": width, "dash": dash},
+            ))
+
+    def add_3d_segment_family(figure, segments, name, color, width=3):
+        x_values, y_values, z_values = [], [], []
+        for x_segment, y_segment, z_segment in segments:
+            x_values.extend(x_segment)
+            y_values.extend(y_segment)
+            z_values.extend(z_segment)
+            x_values.append(None)
+            y_values.append(None)
+            z_values.append(None)
+        if x_values:
+            figure.add_trace(go.Scatter3d(
+                x=x_values, y=y_values, z=z_values, mode="lines", name=name,
+                line={"color": color, "width": width},
+            ))
+
+    with rebar_elevation_tab:
+        elevation_rebar = go.Figure()
+        add_2d_segment_family(elevation_rebar, [([-radius, -radius], [0, cylinder_height]), ([radius, radius], [0, cylinder_height])], "Wall", "#111827", 2.2)
+        add_2d_segment_family(elevation_rebar, [([-radius, -outlet_radius], [0, -hopper_height]), ([radius, outlet_radius], [0, -hopper_height])], "Hopper", "#111827", 2.2)
+        add_2d_segment_family(elevation_rebar, [([-outlet_radius, outlet_radius], [-hopper_height, -hopper_height])], "Outlet", "#111827", 2)
+
+        wall_vertical_elevation = []
+        for angle in [0, math.pi]:
+            x_pos = radius * math.cos(angle)
+            wall_vertical_elevation.append(([x_pos, x_pos], [0, cylinder_height]))
+        add_2d_segment_family(elevation_rebar, wall_vertical_elevation, f"Wall vertical bars ({wall_vertical_bar} mm)", "#dc2626", 2)
+        add_2d_segment_family(elevation_rebar, [([-radius, radius], [float(z), float(z)]) for z in wall_hoop_levels], f"Wall hoop bars ({wall_hoop_bar} mm @ {wall_hoop_spacing} mm)", "#2563eb", 1)
+        hopper_meridional_elevation = [
+            ([radius * math.cos(angle), outlet_radius * math.cos(angle)], [0, -hopper_height])
+            for angle in [0, math.pi]
+        ]
+        add_2d_segment_family(elevation_rebar, hopper_meridional_elevation, f"Hopper meridional bars ({hopper_bar} mm)", "#16a34a", 2)
+        add_2d_segment_family(
+            elevation_rebar,
+            [([-r_level, r_level], [-float(z), -float(z)]) for z in hopper_ring_levels
+             for r_level in [radius - (float(z) / hopper_height) * (radius - outlet_radius)]],
+            f"Hopper ring bars ({hopper_ring_bar} mm)", "#9333ea", 1.4,
+        )
+
+        beam_outline = [([-radius-beam_width/2, radius+beam_width/2, radius+beam_width/2, -radius-beam_width/2, -radius-beam_width/2],
+                         [0, 0, -beam_depth, -beam_depth, 0])]
+        add_2d_segment_family(elevation_rebar, beam_outline, "Ring beam concrete", "#f97316", 6)
+        beam_bar_segments = []
+        for bar in ring_beam_bar_paths:
+            z_pos = ring_beam_top_z - ring_bar_clearance if bar["z"] >= beam_mid_z else ring_beam_bottom_z + ring_bar_clearance
+            beam_bar_segments.append(([-radius, radius], [z_pos, z_pos]))
+        add_2d_segment_family(elevation_rebar, beam_bar_segments, f"Ring beam main bars ({ring_main_bar} mm)", "#991b1b", 2.2)
+        add_2d_segment_family(
+            elevation_rebar,
+            [([-radius + (2*radius)*i/max(1, ring_stirrup_count-1)] * 2,
+              [ring_beam_bottom_z + cover, ring_beam_top_z - cover]) for i in range(ring_stirrup_count)],
+            f"Ring beam stirrups ({ring_stirrup_bar} mm @ {ring_stirrup_spacing} mm)", "#ea580c", 1,
+        )
+
+        column_segments = [([float(x), float(x)], [column_top_z, column_bottom_z]) for x in column_x]
+        add_2d_segment_family(elevation_rebar, column_segments, "Support columns", "rgba(120,53,15,0.65)", 7)
+        column_main_segments = [
+            ([float(x + point[0]), float(x + point[0])], [column_bottom_z, column_top_z])
+            for x in column_x for point in column_bar_points
+        ]
+        add_2d_segment_family(elevation_rebar, column_main_segments, f"Column main bars ({column_main_bar} mm)", "#7f1d1d", 1.5)
+        column_tie_segments = [
+            ([float(x-column_width/2+cover), float(x+column_width/2-cover)], [float(z), float(z)])
+            for x in column_x for z in column_tie_levels
+        ]
+        add_2d_segment_family(elevation_rebar, column_tie_segments, f"Column ties ({column_tie_bar} mm @ {column_tie_spacing} mm)", "#f97316", 1)
+        elevation_rebar.update_layout(
+            title="2D Reinforcement Elevation — Circular RCC Bunker",
+            xaxis_title="Horizontal distance (m)", yaxis_title="Vertical elevation (m)",
+            height=760, margin={"l": 25, "r": 20, "t": 55, "b": 25},
+            legend={"orientation": "h", "y": 1.12},
+        )
+        elevation_rebar.update_xaxes(scaleanchor="y", scaleratio=1, showgrid=True, zeroline=False)
+        elevation_rebar.update_yaxes(range=[column_bottom_z-0.8, cylinder_height+0.8], showgrid=True, zeroline=False)
+        st.plotly_chart(elevation_rebar, use_container_width=True)
+
+    with rebar_plan_tab:
+        plan_rebar = go.Figure()
+        plan_circle = np.linspace(0, 2 * math.pi, 240)
+        add_2d_segment_family(plan_rebar, [(radius*np.cos(plan_circle), radius*np.sin(plan_circle))], "Bunker wall", "#111827", 2.2)
+        add_2d_segment_family(plan_rebar, [((radius-wall_thickness)*np.cos(plan_circle), (radius-wall_thickness)*np.sin(plan_circle))], "Wall inner face", "#6b7280", 1, "dash")
+        plan_rebar.add_trace(go.Scatter(x=radius*np.cos(wall_angles), y=radius*np.sin(wall_angles), mode="markers",
+                                        marker={"color": "#dc2626", "size": 6}, name=f"Wall vertical bars ({wall_vertical_bar} mm)"))
+        for hoop_radius in [radius*0.35, radius*0.60, radius*0.85]:
+            add_2d_segment_family(plan_rebar, [(hoop_radius*np.cos(plan_circle), hoop_radius*np.sin(plan_circle))],
+                                  "Wall hoop reinforcement", "#2563eb", 1)
+        for ring_radius, color, name, width in [
+            (radius+beam_width/2, "#f97316", "Ring beam boundary", 2),
+            (max(radius-beam_width/2, 0.01), "#f97316", "", 2),
+        ]:
+            add_2d_segment_family(plan_rebar, [(ring_radius*np.cos(plan_circle), ring_radius*np.sin(plan_circle))], name, color, width)
+        for bar_index, bar in enumerate(ring_beam_bar_paths):
+            add_2d_segment_family(plan_rebar, [(bar["radius"]*np.cos(plan_circle), bar["radius"]*np.sin(plan_circle))],
+                                  "Ring beam longitudinal bars" if bar_index == 0 else "", "#991b1b", 1.5)
+        stirrup_segments_plan = []
+        for angle in ring_stirrup_angles:
+            stirrup_segments_plan.append((
+                [(radius-stirrup_radial_half)*math.cos(angle), (radius+stirrup_radial_half)*math.cos(angle)],
+                [(radius-stirrup_radial_half)*math.sin(angle), (radius+stirrup_radial_half)*math.sin(angle)],
+            ))
+        add_2d_segment_family(plan_rebar, stirrup_segments_plan, f"Ring beam stirrups ({ring_stirrup_bar} mm)", "#ea580c", 1)
+
+        column_rectangles = []
+        column_main_points_plan = []
+        tie_rectangles_plan = []
+        for x, y in zip(column_x, column_y):
+            rect_x = [x-column_width/2, x+column_width/2, x+column_width/2, x-column_width/2, x-column_width/2]
+            rect_y = [y-column_depth/2, y-column_depth/2, y+column_depth/2, y+column_depth/2, y-column_depth/2]
+            column_rectangles.append((rect_x, rect_y))
+            tie_w = max(0.01, column_width - 2*cover)
+            tie_d = max(0.01, column_depth - 2*cover)
+            tie_rectangles_plan.append(([x-tie_w/2, x+tie_w/2, x+tie_w/2, x-tie_w/2, x-tie_w/2],
+                                        [y-tie_d/2, y-tie_d/2, y+tie_d/2, y+tie_d/2, y-tie_d/2]))
+            for point in column_bar_points:
+                column_main_points_plan.append((x+point[0], y+point[1]))
+        add_2d_segment_family(plan_rebar, column_rectangles, "Column sections", "rgba(120,53,15,0.65)", 2)
+        add_2d_segment_family(plan_rebar, tie_rectangles_plan, "Column closed ties", "#ea580c", 1.5)
+        if column_main_points_plan:
+            plan_rebar.add_trace(go.Scatter(
+                x=[point[0] for point in column_main_points_plan], y=[point[1] for point in column_main_points_plan],
+                mode="markers", marker={"color": "#7f1d1d", "size": 6},
+                name=f"Column main bars ({column_main_bar} mm)",
+            ))
+        plan_limit = radius + beam_width + column_width + 1
+        plan_rebar.update_layout(title="2D Reinforcement Plan — Circular RCC Bunker", xaxis_title="X direction (m)",
+                                 yaxis_title="Y direction (m)", height=720,
+                                 margin={"l": 20, "r": 20, "t": 55, "b": 20},
+                                 legend={"orientation": "h", "y": 1.12})
+        plan_rebar.update_xaxes(range=[-plan_limit, plan_limit], scaleanchor="y", scaleratio=1, showgrid=True)
+        plan_rebar.update_yaxes(range=[-plan_limit, plan_limit], showgrid=True)
+        st.plotly_chart(plan_rebar, use_container_width=True)
+
+    with rebar_3d_tab:
+        fig_rebar_3d = go.Figure()
+        ring_outer_radius = radius + beam_width / 2
+        ring_inner_radius = max(0.01, radius - beam_width / 2)
+        ring_theta_grid, ring_radius_grid = np.meshgrid(
+            theta_detail, np.linspace(ring_inner_radius, ring_outer_radius, 10)
+        )
+        for z_level in [ring_beam_top_z, ring_beam_bottom_z]:
+            fig_rebar_3d.add_trace(go.Surface(
+                x=ring_radius_grid*np.cos(ring_theta_grid),
+                y=ring_radius_grid*np.sin(ring_theta_grid),
+                z=np.full_like(ring_radius_grid, z_level),
+                colorscale=[[0, "orange"], [1, "orange"]],
+                showscale=False, opacity=0.25, name="Ring beam concrete",
+                showlegend=z_level == ring_beam_top_z,
+            ))
+        ring_face_theta, ring_face_z = np.meshgrid(
+            theta_detail, np.linspace(ring_beam_bottom_z, ring_beam_top_z, 8)
+        )
+        for face_radius in [ring_outer_radius, ring_inner_radius]:
+            fig_rebar_3d.add_trace(go.Surface(
+                x=face_radius*np.cos(ring_face_theta),
+                y=face_radius*np.sin(ring_face_theta), z=ring_face_z,
+                colorscale=[[0, "orange"], [1, "orange"]],
+                showscale=False, opacity=0.18, name="Ring beam concrete", showlegend=False,
+            ))
+
+        wall_vertical_3d = []
+        for angle in wall_angles:
+            x_pos, y_pos = radius*math.cos(angle), radius*math.sin(angle)
+            wall_vertical_3d.append(([x_pos, x_pos], [y_pos, y_pos], [0, cylinder_height]))
+        add_3d_segment_family(fig_rebar_3d, wall_vertical_3d, f"Wall vertical bars ({wall_vertical_bar} mm)", "#dc2626", 3)
+        wall_hoop_3d = [
+            (radius*np.cos(theta_detail), radius*np.sin(theta_detail), np.full_like(theta_detail, float(z)))
+            for z in wall_hoop_levels
+        ]
+        add_3d_segment_family(fig_rebar_3d, wall_hoop_3d, f"Wall hoop bars ({wall_hoop_bar} mm)", "#2563eb", 3)
+        hopper_meridional_3d = [
+            ([radius*math.cos(angle), outlet_radius*math.cos(angle)],
+             [radius*math.sin(angle), outlet_radius*math.sin(angle)], [0, -hopper_height])
+            for angle in hopper_angles
+        ]
+        add_3d_segment_family(fig_rebar_3d, hopper_meridional_3d, f"Hopper meridional bars ({hopper_bar} mm)", "#16a34a", 4)
+        hopper_ring_3d = []
+        for level in hopper_ring_levels:
+            ring_radius = radius - (float(level)/hopper_height)*(radius-outlet_radius)
+            hopper_ring_3d.append((ring_radius*np.cos(theta_detail), ring_radius*np.sin(theta_detail), np.full_like(theta_detail, -float(level))))
+        add_3d_segment_family(fig_rebar_3d, hopper_ring_3d, f"Hopper ring bars ({hopper_ring_bar} mm)", "#9333ea", 3)
+
+        beam_main_3d = [
+            (bar["radius"]*np.cos(theta_detail), bar["radius"]*np.sin(theta_detail), np.full_like(theta_detail, bar["z"]))
+            for bar in ring_beam_bar_paths
+        ]
+        add_3d_segment_family(fig_rebar_3d, beam_main_3d, f"Ring beam longitudinal bars ({ring_main_bar} mm)", "#991b1b", 5)
+        beam_stirrups_3d = []
+        for angle in ring_stirrup_angles:
+            radial = [radius-stirrup_radial_half, radius+stirrup_radial_half, radius+stirrup_radial_half,
+                      radius-stirrup_radial_half, radius-stirrup_radial_half]
+            z_path = [ring_beam_bottom_z+cover, ring_beam_bottom_z+cover, ring_beam_top_z-cover,
+                      ring_beam_top_z-cover, ring_beam_bottom_z+cover]
+            beam_stirrups_3d.append(([r*math.cos(angle) for r in radial], [r*math.sin(angle) for r in radial], z_path))
+        add_3d_segment_family(fig_rebar_3d, beam_stirrups_3d, f"Ring beam stirrups ({ring_stirrup_bar} mm)", "#ea580c", 3)
+
+        column_concrete_3d = []
+        column_main_3d = []
+        for x, y in zip(column_x, column_y):
+            column_concrete_3d.append(([float(x), float(x)], [float(y), float(y)], [column_top_z, column_bottom_z]))
+            for point in column_bar_points:
+                x_bar, y_bar = float(x+point[0]), float(y+point[1])
+                column_main_3d.append(([x_bar, x_bar], [y_bar, y_bar], [column_bottom_z, column_top_z]))
+        add_3d_segment_family(fig_rebar_3d, column_concrete_3d, "Supporting columns", "#8b4513", 10)
+        add_3d_segment_family(fig_rebar_3d, column_main_3d, f"Column main bars ({column_main_bar} mm)", "#7f1d1d", 5)
+        column_ties_3d = []
+        tie_half_w = max(0.01, column_width/2-cover-column_tie_bar/2000)
+        tie_half_d = max(0.01, column_depth/2-cover-column_tie_bar/2000)
+        tie_local_x = [-tie_half_w, tie_half_w, tie_half_w, -tie_half_w, -tie_half_w]
+        tie_local_y = [-tie_half_d, -tie_half_d, tie_half_d, tie_half_d, -tie_half_d]
+        for x, y in zip(column_x, column_y):
+            for z_level in column_tie_levels:
+                column_ties_3d.append(([float(x)+v for v in tie_local_x], [float(y)+v for v in tie_local_y], [float(z_level)]*5))
+        add_3d_segment_family(fig_rebar_3d, column_ties_3d, f"Column ties ({column_tie_bar} mm)", "#f97316", 3)
+
+        fig_rebar_3d.update_layout(
+            title="3D Reinforcement Model — Circular RCC Bunker",
+            scene={"xaxis_title": "X (m)", "yaxis_title": "Y (m)", "zaxis_title": "Elevation (m)",
+                   "aspectmode": "data"},
+            height=850, margin={"l": 0, "r": 0, "t": 60, "b": 0},
+            legend={"orientation": "h", "y": 1.12},
+        )
+        st.plotly_chart(fig_rebar_3d, use_container_width=True)
+
+    st.caption(
+        f"Displayed bars: {wall_bar_count} wall vertical positions, {len(wall_hoop_levels)} wall hoop levels, "
+        f"{hopper_meridional_count} hopper meridional bars, {len(hopper_ring_levels)} hopper ring levels, "
+        f"{int(number_of_columns)} support columns. All detailing is schematic and unverified."
+    )
 
 with tab_bbs:
     st.subheader("Simplified reinforcement quantity schedule")
