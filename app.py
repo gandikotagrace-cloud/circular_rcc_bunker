@@ -270,33 +270,207 @@ with tab_structure:
     st.dataframe(reinforcement_df.round(2), use_container_width=True, hide_index=True)
 
 with tab_model:
-    st.subheader("Schematic elevation and interactive geometry")
-    left, right = st.columns(2)
-    with left:
+    st.subheader("2D engineering drawings and interactive 3D model")
+    st.caption("This geometry view follows the starter's Step 9 plan/elevation/section and Step 10 3D bunker arrangement.")
+
+    drawing_plan, drawing_elevation, drawing_section, drawing_3d = st.tabs([
+        "1. Top plan", "2. Front elevation", "3. Vertical section", "4. Interactive 3D model"
+    ])
+
+    sloping_length = math.hypot(hopper_height, radius - outlet_radius)
+    hopper_dx = hopper_thickness * hopper_height / sloping_length
+    hopper_dz = hopper_thickness * (radius - outlet_radius) / sloping_length
+
+    with drawing_plan:
+        plan = go.Figure()
+        circle_theta = np.linspace(0, 2 * math.pi, 240)
+        for r_value, color, dash, name, width in [
+            (radius + beam_width / 2, "#111827", "solid", "Ring beam outer edge", 2.4),
+            (max(radius - beam_width / 2, 0.001), "#111827", "dash", "Ring beam inner edge", 1.5),
+            (radius, "#2563eb", "solid", "Wall outer face", 2.4),
+            (radius - wall_thickness, "#2563eb", "dash", "Wall inner face", 1.5),
+            (outlet_radius, "#dc2626", "solid", "Outlet", 2.0),
+        ]:
+            plan.add_trace(go.Scatter(
+                x=r_value * np.cos(circle_theta), y=r_value * np.sin(circle_theta),
+                mode="lines", line={"color": color, "dash": dash, "width": width}, name=name,
+            ))
+        for index in range(int(number_of_columns)):
+            angle = 2 * math.pi * index / int(number_of_columns)
+            local_corners = np.array([
+                [-column_width / 2, -column_depth / 2],
+                [column_width / 2, -column_depth / 2],
+                [column_width / 2, column_depth / 2],
+                [-column_width / 2, column_depth / 2],
+                [-column_width / 2, -column_depth / 2],
+            ])
+            rotation = np.array([[math.cos(angle), -math.sin(angle)], [math.sin(angle), math.cos(angle)]])
+            corners = local_corners @ rotation.T
+            corners[:, 0] += radius * math.cos(angle)
+            corners[:, 1] += radius * math.sin(angle)
+            plan.add_trace(go.Scatter(
+                x=corners[:, 0], y=corners[:, 1], mode="lines",
+                line={"color": "#15803d", "width": 2}, fill="toself",
+                fillcolor="rgba(21,128,61,0.06)", name="Support columns" if index == 0 else None,
+                showlegend=index == 0,
+            ))
+        plan_limit = radius + beam_width + column_width + 1
+        plan.update_layout(title="1. TOP PLAN", xaxis_title="X – Width (m)", yaxis_title="Y – Width (m)",
+                           height=650, margin={"l": 20, "r": 20, "t": 55, "b": 20},
+                           legend={"orientation": "h", "y": 1.12})
+        plan.update_xaxes(range=[-plan_limit, plan_limit], showgrid=True, zeroline=False, scaleanchor="y", scaleratio=1)
+        plan.update_yaxes(range=[-plan_limit, plan_limit], showgrid=True, zeroline=False)
+        st.plotly_chart(plan, use_container_width=True)
+
+    with drawing_elevation:
         elevation = go.Figure()
-        elevation.add_trace(go.Scatter(x=[-radius, -radius, radius, radius], y=[0, cylinder_height, cylinder_height, 0], fill="toself", fillcolor="rgba(37,99,235,0.12)", line={"color": "#2563eb", "width": 3}, name="Cylindrical wall"))
-        elevation.add_trace(go.Scatter(x=[-radius, -outlet_radius, outlet_radius, radius], y=[0, -hopper_height, -hopper_height, 0], fill="toself", fillcolor="rgba(234,88,12,0.18)", line={"color": "#ea580c", "width": 3}, name="Hopper"))
-        elevation.add_trace(go.Scatter(x=[-radius - beam_width / 2, radius + beam_width / 2, radius + beam_width / 2, -radius - beam_width / 2, -radius - beam_width / 2], y=[0, 0, -beam_depth, -beam_depth, 0], fill="toself", fillcolor="rgba(100,116,139,0.35)", line={"color": "#475569"}, name="Ring beam (schematic)"))
-        for angle in np.linspace(0, 2 * math.pi, int(number_of_columns), endpoint=False):
-            x = (radius + column_width / 2) * math.cos(angle)
-            if abs(x) > radius * 0.35:
-                elevation.add_trace(go.Scatter(x=[x, x], y=[-beam_depth, -beam_depth-column_height], mode="lines", line={"color": "#334155", "width": 7}, showlegend=False))
-        elevation.update_layout(title="Schematic elevation", xaxis_title="Width (m)", yaxis_title="Elevation (m)", height=470, showlegend=True, margin={"l": 20, "r": 20, "t": 50, "b": 20})
-        elevation.update_yaxes(scaleanchor="x", scaleratio=1)
+        def add_elevation_line(x_values, y_values, color, name, dash="solid", width=2):
+            elevation.add_trace(go.Scatter(x=x_values, y=y_values, mode="lines", name=name,
+                                           line={"color": color, "dash": dash, "width": width}))
+
+        add_elevation_line([-radius, -radius], [0, cylinder_height], "#2563eb", "Wall outer face", width=2.5)
+        add_elevation_line([radius, radius], [0, cylinder_height], "#2563eb", "", width=2.5)
+        add_elevation_line([-radius + wall_thickness, -radius + wall_thickness], [0, cylinder_height], "#2563eb", "Wall inner face", "dash", 1.2)
+        add_elevation_line([radius - wall_thickness, radius - wall_thickness], [0, cylinder_height], "#2563eb", "", "dash", 1.2)
+        add_elevation_line([-radius, radius], [cylinder_height, cylinder_height], "#2563eb", "Top edge")
+        add_elevation_line([-radius, radius], [0, 0], "#2563eb", "Bottom edge", width=1.5)
+        add_elevation_line([-radius, -outlet_radius], [0, -hopper_height], "#ea580c", "Hopper outer face", width=2.5)
+        add_elevation_line([radius, outlet_radius], [0, -hopper_height], "#ea580c", "", width=2.5)
+        add_elevation_line([-radius + hopper_dx, -outlet_radius + hopper_dx], [hopper_dz, -hopper_height + hopper_dz], "#ea580c", "Hopper inner face", "dash", 1.2)
+        add_elevation_line([radius - hopper_dx, outlet_radius - hopper_dx], [hopper_dz, -hopper_height + hopper_dz], "#ea580c", "", "dash", 1.2)
+        for side in [-1, 1]:
+            beam_x = side * radius - beam_width / 2
+            elevation.add_trace(go.Scatter(
+                x=[beam_x, beam_x + beam_width, beam_x + beam_width, beam_x, beam_x],
+                y=[-beam_depth, -beam_depth, 0, 0, -beam_depth], mode="lines", fill="toself",
+                fillcolor="rgba(156,163,175,0.55)", line={"color": "#111827", "width": 1.8},
+                name="Ring beam" if side == -1 else None, showlegend=side == -1,
+            ))
+            column_x = side * radius - column_width / 2
+            elevation.add_trace(go.Scatter(
+                x=[column_x, column_x + column_width, column_x + column_width, column_x, column_x],
+                y=[-beam_depth-column_height, -beam_depth-column_height, -beam_depth, -beam_depth, -beam_depth-column_height],
+                mode="lines", fill="toself", fillcolor="rgba(148,163,184,0.55)",
+                line={"color": "#111827", "width": 1.8},
+                name="Support column" if side == -1 else None, showlegend=side == -1,
+            ))
+        add_elevation_line([-outlet_radius, -outlet_radius], [-hopper_height, -hopper_height-0.5], "#dc2626", "Outlet", width=2)
+        add_elevation_line([outlet_radius, outlet_radius], [-hopper_height, -hopper_height-0.5], "#dc2626", "", width=2)
+        add_elevation_line([-outlet_radius, outlet_radius], [-hopper_height-0.5, -hopper_height-0.5], "#dc2626", "", width=2)
+        elevation.add_annotation(x=0, y=cylinder_height/2, text=f"CYLINDRICAL WALL<br>H = {cylinder_height:.2f} m", showarrow=False)
+        elevation.add_annotation(x=0, y=-hopper_height/2, text=f"CONICAL HOPPER<br>H = {hopper_height:.2f} m", showarrow=False)
+        elevation.add_annotation(x=radius+0.15, y=-beam_depth/2, text="Ring beam", showarrow=True, ax=55, ay=0)
+        elevation.add_annotation(x=radius+0.15, y=-beam_depth-column_height/2, text="Support column", showarrow=True, ax=65, ay=0)
+        side_limit = radius + column_width + 2.0
+        elevation.update_layout(title="2. FRONT ELEVATION", xaxis_title="Width (m)", yaxis_title="Height (m)",
+                                height=700, margin={"l": 20, "r": 20, "t": 55, "b": 20},
+                                legend={"orientation": "h", "y": 1.12})
+        elevation.update_xaxes(range=[-side_limit, side_limit], showgrid=True, zeroline=False, scaleanchor="y", scaleratio=1)
+        elevation.update_yaxes(range=[-hopper_height-0.8-column_height-beam_depth, cylinder_height+1], showgrid=True, zeroline=False)
         st.plotly_chart(elevation, use_container_width=True)
-    with right:
-        theta = np.linspace(0, 2 * math.pi, 60)
-        z_cyl = np.linspace(0, cylinder_height, 24)
-        t_grid, z_grid = np.meshgrid(theta, z_cyl)
+
+    with drawing_section:
+        section = go.Figure()
+        section.add_trace(go.Scatter(x=[0, 0], y=[-hopper_height-0.8-column_height-beam_depth, cylinder_height+1],
+                                     mode="lines", line={"color": "#6b7280", "dash": "dot", "width": 1}, name="Centre line"))
+        for side in [-1, 1]:
+            wall_x = [-radius, -radius+wall_thickness, -radius+wall_thickness, -radius] if side == -1 else [radius-wall_thickness, radius, radius, radius-wall_thickness]
+            section.add_trace(go.Scatter(x=wall_x, y=[0, 0, cylinder_height, cylinder_height], mode="lines", fill="toself",
+                                         fillcolor="rgba(125,211,252,0.55)", line={"color": "#2563eb", "width": 1.8},
+                                         name="Cylindrical wall section" if side == -1 else None, showlegend=side == -1))
+            hopper_x = [-radius, -radius+hopper_dx, -outlet_radius+hopper_dx, -outlet_radius] if side == -1 else [radius, radius-hopper_dx, outlet_radius-hopper_dx, outlet_radius]
+            section.add_trace(go.Scatter(x=hopper_x, y=[0, hopper_dz, -hopper_height+hopper_dz, -hopper_height], mode="lines", fill="toself",
+                                         fillcolor="rgba(253,230,138,0.7)", line={"color": "#ea580c", "width": 1.8},
+                                         name="Hopper wall section" if side == -1 else None, showlegend=side == -1))
+            beam_x = side * radius - beam_width / 2
+            section.add_trace(go.Scatter(x=[beam_x, beam_x+beam_width, beam_x+beam_width, beam_x, beam_x],
+                                         y=[-beam_depth, -beam_depth, 0, 0, -beam_depth], mode="lines", fill="toself",
+                                         fillcolor="rgba(156,163,175,0.55)", line={"color": "#111827", "width": 1.8},
+                                         name="Ring beam" if side == -1 else None, showlegend=side == -1))
+            column_x = side * radius - column_width / 2
+            section.add_trace(go.Scatter(x=[column_x, column_x+column_width, column_x+column_width, column_x, column_x],
+                                         y=[-beam_depth-column_height, -beam_depth-column_height, -beam_depth, -beam_depth, -beam_depth-column_height],
+                                         mode="lines", fill="toself", fillcolor="rgba(148,163,184,0.55)", line={"color": "#111827", "width": 1.8},
+                                         name="Support column" if side == -1 else None, showlegend=side == -1))
+        section.add_trace(go.Scatter(x=[-outlet_radius, outlet_radius, outlet_radius, -outlet_radius, -outlet_radius],
+                                     y=[-hopper_height, -hopper_height, -hopper_height-0.5, -hopper_height-0.5, -hopper_height],
+                                     mode="lines", fill="toself", fillcolor="rgba(248,113,113,0.65)", line={"color": "#dc2626", "width": 1.8}, name="Outlet"))
+        section.add_annotation(x=0, y=cylinder_height/2, text="CYLINDRICAL<br>WALL", showarrow=False)
+        section.add_annotation(x=0, y=-hopper_height/2, text="HOPPER", showarrow=False)
+        section.add_annotation(x=0, y=-hopper_height-0.25, text="OUTLET", showarrow=False)
+        section.update_layout(title="3. VERTICAL SECTION", xaxis_title="Width (m)", yaxis_title="Height (m)",
+                              height=700, margin={"l": 20, "r": 20, "t": 55, "b": 20},
+                              legend={"orientation": "h", "y": 1.12})
+        section.update_xaxes(range=[-(radius+column_width+2), radius+column_width+2], showgrid=True, zeroline=False, scaleanchor="y", scaleratio=1)
+        section.update_yaxes(range=[-hopper_height-0.8-column_height-beam_depth, cylinder_height+1], showgrid=True, zeroline=False)
+        st.plotly_chart(section, use_container_width=True)
+
+    with drawing_3d:
+        theta = np.linspace(0, 2 * math.pi, 100)
         fig3d = go.Figure()
-        fig3d.add_trace(go.Surface(x=radius*np.cos(t_grid), y=radius*np.sin(t_grid), z=z_grid, colorscale=[[0, "#60a5fa"], [1, "#60a5fa"]], showscale=False, opacity=0.75, name="Wall"))
-        z_hop = np.linspace(-hopper_height, 0, 18)
-        t_hop, z_hop_grid = np.meshgrid(theta, z_hop)
-        r_hop = outlet_radius + (radius-outlet_radius)*(z_hop_grid+hopper_height)/hopper_height
-        fig3d.add_trace(go.Surface(x=r_hop*np.cos(t_hop), y=r_hop*np.sin(t_hop), z=z_hop_grid, colorscale=[[0, "#fb923c"], [1, "#fb923c"]], showscale=False, opacity=0.82, name="Hopper"))
-        fig3d.update_layout(title="Interactive geometric model (schematic)", scene={"xaxis_title": "X (m)", "yaxis_title": "Y (m)", "zaxis_title": "Elevation (m)", "aspectmode": "data"}, height=470, margin={"l": 0, "r": 0, "t": 50, "b": 0})
+        z_cylinder = np.linspace(0, cylinder_height, 35)
+        t_cylinder, z_cyl_grid = np.meshgrid(theta, z_cylinder)
+        for r_wall, color, opacity, name in [
+            (radius, "lightblue", 0.85, "Cylindrical Wall – Outer Face"),
+            (radius-wall_thickness, "deepskyblue", 0.75, "Cylindrical Wall – Inner Face"),
+        ]:
+            fig3d.add_trace(go.Surface(x=r_wall*np.cos(t_cylinder), y=r_wall*np.sin(t_cylinder), z=z_cyl_grid,
+                                        colorscale=[[0, color], [1, color]], showscale=False, opacity=opacity, name=name))
+
+        z_hopper = np.linspace(-hopper_height, 0, 35)
+        t_hopper, z_hop_grid = np.meshgrid(theta, z_hopper)
+        outer_hopper_radius = outlet_radius + (radius-outlet_radius)*(z_hop_grid+hopper_height)/hopper_height
+        fig3d.add_trace(go.Surface(x=outer_hopper_radius*np.cos(t_hopper), y=outer_hopper_radius*np.sin(t_hopper), z=z_hop_grid,
+                                    colorscale=[[0, "orange"], [1, "orange"]], showscale=False, opacity=0.9, name="Conical Hopper – Outer Face"))
+        inner_hopper_radius = outer_hopper_radius - hopper_dx
+        fig3d.add_trace(go.Surface(x=inner_hopper_radius*np.cos(t_hopper), y=inner_hopper_radius*np.sin(t_hopper), z=z_hop_grid+hopper_dz,
+                                    colorscale=[[0, "gold"], [1, "gold"]], showscale=False, opacity=0.75, name="Conical Hopper – Inner Face"))
+
+        ring_outer_radius = radius + beam_width/2
+        ring_inner_radius = max(radius-beam_width/2, 0.001)
+        radial_values = np.linspace(ring_inner_radius, ring_outer_radius, 12)
+        t_ring, radial_grid = np.meshgrid(theta, radial_values)
+        for z_level, name in [(0, "Ring Beam – Top"), (-beam_depth, "Ring Beam – Bottom")]:
+            fig3d.add_trace(go.Surface(x=radial_grid*np.cos(t_ring), y=radial_grid*np.sin(t_ring), z=np.full_like(radial_grid, z_level),
+                                        colorscale=[[0, "dimgray"], [1, "dimgray"]], showscale=False, opacity=1, name=name))
+        t_side, z_side = np.meshgrid(theta, np.linspace(-beam_depth, 0, 8))
+        for r_side, name in [(ring_outer_radius, "Ring Beam – Outer Face"), (ring_inner_radius, "Ring Beam – Inner Face")]:
+            fig3d.add_trace(go.Surface(x=r_side*np.cos(t_side), y=r_side*np.sin(t_side), z=z_side,
+                                        colorscale=[[0, "gray"], [1, "gray"]], showscale=False, opacity=1, name=name))
+
+        local_column = np.array([[-column_width/2, -column_depth/2], [column_width/2, -column_depth/2],
+                                 [column_width/2, column_depth/2], [-column_width/2, column_depth/2]])
+        mesh_i = [0, 0, 4, 4, 0, 0, 1, 1, 2, 2, 3, 3]
+        mesh_j = [1, 2, 5, 6, 1, 5, 2, 6, 3, 7, 0, 4]
+        mesh_k = [2, 3, 6, 7, 5, 4, 6, 5, 7, 6, 4, 7]
+        column_radius = radius + column_width/2
+        for index in range(int(number_of_columns)):
+            angle = 2 * math.pi * index / int(number_of_columns)
+            rotation = np.array([[math.cos(angle), -math.sin(angle)], [math.sin(angle), math.cos(angle)]])
+            corners = local_column @ rotation.T
+            corners[:, 0] += column_radius * math.cos(angle)
+            corners[:, 1] += column_radius * math.sin(angle)
+            fig3d.add_trace(go.Mesh3d(
+                x=np.concatenate([corners[:, 0], corners[:, 0]]), y=np.concatenate([corners[:, 1], corners[:, 1]]),
+                z=[-beam_depth-column_height]*4 + [-beam_depth]*4,
+                i=mesh_i, j=mesh_j, k=mesh_k, color="gray", opacity=1,
+                name="RCC Support Columns" if index == 0 else None, showlegend=index == 0,
+            ))
+
+        z_outlet = np.linspace(-hopper_height-0.6, -hopper_height, 8)
+        t_outlet, z_outlet_grid = np.meshgrid(theta, z_outlet)
+        fig3d.add_trace(go.Surface(x=outlet_radius*np.cos(t_outlet), y=outlet_radius*np.sin(t_outlet), z=z_outlet_grid,
+                                    colorscale=[[0, "lightcoral"], [1, "lightcoral"]], showscale=False, opacity=0.95, name="Outlet Pipe"))
+        fig3d.add_trace(go.Scatter3d(x=[0, 0], y=[0, 0], z=[-hopper_height-0.6, cylinder_height], mode="lines",
+                                     line={"color": "black", "width": 2, "dash": "dash"}, name="Centre Line"))
+        fig3d.update_layout(title={"text": "CIRCULAR RCC BUNKER – INTERACTIVE 3D MODEL", "x": 0.5},
+                            scene={"xaxis_title": "X (m)", "yaxis_title": "Y (m)", "zaxis_title": "Height (m)",
+                                   "aspectmode": "data", "camera": {"eye": {"x": 1.7, "y": 1.7, "z": 1.3}}},
+                            height=800, margin={"l": 0, "r": 0, "t": 60, "b": 0},
+                            legend={"orientation": "h", "y": -0.1})
         st.plotly_chart(fig3d, use_container_width=True)
-    st.caption("Schematic geometry only; no construction detailing, tolerances, connection design, or structural adequacy is represented.")
+
+    st.caption("Schematic geometry only, matching the source drawing arrangement. These figures are not construction drawings and do not verify structural adequacy.")
 
 with tab_bbs:
     st.subheader("Simplified reinforcement quantity schedule")
